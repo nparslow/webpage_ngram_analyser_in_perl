@@ -1,0 +1,246 @@
+#!usr/bin/perl
+
+package NTupleModules::Web
+  ;    # directory::filename (sans .pm), note the file must be .pm for a module
+
+use strict;
+use warnings;
+
+# bug in Google::Search module gives error line:
+# overload arg '' is invalid at /usr/local/share/perl/5.18.2/Google/Search/ Error.pm line 7.
+# re: http://www.perlmonks.org/?node_id=1062384
+# temporarily turning off string and/or warnings doesnt change anything
+# solution with IO::Null doesn't work:
+# redirecting Std::out and std::err don't work
+# redirecting warnings doesn't work
+use Google::Search;
+
+use HTTP::Request;                  # to get the HTTP from a given website:
+use HTML::TreeBuilder;              # to interpret the html:
+use HTML::FormatText::WithLinks;    # gets Lynx -like text from a webpage
+
+use Lingua::Identify qw(:language_identification);    # language identification
+
+# next lines are for exporting this as a module
+use Exporter;
+use vars qw($VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
+
+$VERSION = 0.05;            # we assign a version number
+@ISA     = qw(Exporter);    # this line is always the same
+@EXPORT  = ();              # default elements to export, best empty
+@EXPORT_OK = qw(get_web_texts read_html_content)
+  ;                         # functions which can be exported by request
+
+# groups of functions which can be exported by request with the defined name :
+%EXPORT_TAGS = (
+    DEFAULT => [qw(&get_web_texts)],
+    Both    => [qw(&get_web_texts &read_html_content)]
+);
+
+# at the end of the file a '1;' is required for importing
+
+binmode STDOUT, ":encoding(UTF-8)";    # sets the std::out encoding to utf-8
+
+# todo : what if no web connection?
+# todo verbose option
+
+sub read_html_content {
+    if ( scalar(@_) != 1 and scalar(@_) != 2 ) {   # i.e. check no. of arguments
+        die "Error: read_html_content requires 1 or 2 arguments, "
+          . scalar(@_)
+          . " given:\n@_\n";
+    }
+    my $url = $_[0];
+    my $use_paragraphs =
+      defined $_[1] ? $_[1] : 0;   # anything non-zero is interpretted as 'True'
+
+    # a set in perl:
+    my @keys = qw/en fr/;
+    my %lang2texts;
+    @lang2texts{@keys} = ();       # each key is undefined
+
+    my $ua   = LWP::UserAgent->new;
+    my $resp = $ua->get($url);
+
+    if ( $resp->is_success ) {
+
+# nb treebuilder extends html::parser and html::element (this is very handy for documentation)
+        my $root =
+          HTML::TreeBuilder->new_from_content( $resp->decoded_content );
+        $root->no_space_compacting(1)
+          ;    # goal was to get better spacing, but doesn't do what we need
+
+        my @texts;
+        if ($use_paragraphs) {
+
+         # search for any subtree between 'p' tags, and take the text from there
+            my @found_paras = $root->find_by_tag_name('p');
+            for my $paragraph (@found_paras) {
+                push( @texts, $paragraph->as_trimmed_text )
+                  ;    # trimmed removes leading and trailing whitespace
+            }
+        }
+        else {
+# initialise the text formatter, we don't want to show links, so leave these empty
+            my $f = HTML::FormatText::WithLinks->new(
+                before_link => '',
+                after_link  => '',
+                footnote    => ''
+            );
+
+      # we only get one element this way so set it to the first text in the list
+            $texts[0] = $f->parse( $resp->decoded_content );
+        }
+
+        # we join the text(s) to check the language
+        my $lang_found = langof( join('\n'), @texts );
+        print "Language found: $lang_found \n";
+
+# check if language is in the ones interesting for us, and add the texts if it is
+        if ( exists $lang2texts{$lang_found} ) {
+            if ( defined $lang2texts{$lang_found} ) {
+                push( @{ $lang2texts{$lang_found} }, @texts );
+            }
+            else {
+                $lang2texts{$lang_found} = \@texts;
+            }
+            my $arr_size = @{ $lang2texts{$lang_found} };
+            print "no. texts found $arr_size \n";
+        }
+
+        # print example(s) of the found text(s)
+        for my $lango ( keys %lang2texts ) {
+            for my $t ( @{ $lang2texts{$lango} } ) {
+                print "$lango: text example" . substr( $t, 0, 40 ) . "\n";
+            }
+        }
+        print "\n";
+    }
+    else {
+        # we couldn't get the page
+        warn $resp->status_line
+          . "\n when trying to retrieve: $url\n ignoring page";
+    }
+    return %lang2texts;
+}
+
+sub get_web_pages {
+    if ( scalar(@_) != 2 and scalar(@_) != 3 ) {   # i.e. check no. of arguments
+        die "Error: get_web_pages requires 2 or 3 arguments, "
+          . scalar(@_)
+          . " given:\n@_\n";
+    }
+    my $search_string = $_[0];
+    my $num_pages     = $_[1];  # currently max = 64 will bug if more
+                                #, lr=>"lang_fr"} ); # lr=>"lang_en" for English
+    my $language =
+      defined $_[2]
+      ? "lang_" . $_[2]
+      : undef
+      ;  # input argument can be undef, "fr" or "en" (TODO throw error if other)
+    my @results;
+
+    print "Searching Web for $search_string\n\n";
+
+# for parameters to search see full list:
+# http://stackoverflow.com/questions/11419407/using-query-string-parameters-with-google-maps-api-v3-services
+# for languages:
+# https://sites.google.com/site/tomihasa/google-language-codes
+# unfortunately the 'start=>50' doesn't work so that limits our max no. pages to download
+    my $search;
+    if ( defined $language ) {
+        $search =
+          Google::Search->Web(
+            query => { q => $search_string, lr => $language } );  # , start=>"5"
+    }
+    else {
+        $search =
+          Google::Search->Web( query => { q => $search_string } )
+          ;                                                       # , start=>"5"
+    }
+
+    while ( my $result = $search->next ) {
+        if ( defined $result ) {
+            print "search " . $result->uri . "\n";
+            push( @results, $result->uri );
+        }
+        else {
+            print "empty search result!!! \n";
+        }
+    }
+    print "\n";
+    return @results;
+}
+
+# primary interface function, sets defaults and combines other functions
+sub get_web_texts {
+    if ( scalar(@_) > 3 ) {    # i.e. check no. of arguments
+        die "Error: get_web_texts requires at most 3 arguments, "
+          . scalar(@_)
+          . " given:\n@_\n";
+    }
+
+    # currently max pages = 64 will bug if more
+    my $search_request =
+      defined $_[0] ? $_[0] : "chocolat";    # set the default search
+    my $num_pages =
+      defined $_[1] ? $_[1] : 50;    # set the num pages, or default = 50
+    my $language =
+      defined $_[2]
+      ? $_[2]
+      : undef;   # or "en" or "fr", undef means either # TODO limit to en and fr
+                 #print "my args $search_request , $num_pages";
+                 # get the max number of pages now, we'll limit later:
+    my @urls = get_web_pages( $search_request, 63, $language );
+
+    # a set in perl:
+    my @keys = qw/en fr/;
+    my %lang2texts;
+    @lang2texts{@keys} = ();    # each key is undefined
+
+    my $pages_loaded = 0;
+    my $current_page = 0;
+    while ( $pages_loaded < $num_pages and $current_page < scalar(@urls) ) {
+        my $url = $urls[$current_page];
+        print "Getting text from webpage: $url\n";
+        my %new_lang2texts = read_html_content($url);
+        if (%new_lang2texts) {    # 'defined' is depreciated for hashes
+            my $language_ok = 0;
+            foreach my $lango ( keys %new_lang2texts ) {
+                if ( defined $new_lang2texts{$lango}
+                    and ( !defined($language) or $lango eq $language ) )
+                {   # i.e. if language is undefined or matches required language
+                    $language_ok = 1;
+                    if ( defined $lang2texts{$lango} ) {
+                        my @b = @{ $new_lang2texts{$lango} };
+                        my @a = $lang2texts{$lango};
+                        push( @a, @b );
+                        push(
+                            @{ $lang2texts{$lango} },
+                            @{ $new_lang2texts{$lango} }
+                        );
+                    }
+                    else {
+                        $lang2texts{$lango} = $new_lang2texts{$lango};
+                    }
+
+  #print "length of new texts $lango :".scalar(@{$new_lang2texts{$lango}})."\n";
+  #@texts = (@texts, @newtexts);         # concatenate the arrays
+  #print "length of texts $lango : ".scalar(@{$new_lang2texts{$lango}})."\n\n";
+                }
+            }
+            if ($language_ok) { $pages_loaded++; }
+        }
+        else {
+            # don't increment page_count if page failed to load
+        }
+        $current_page++;
+    }
+    print "$pages_loaded pages loaded in appropriate language\n";
+
+    return %lang2texts;
+
+}
+
+# required to make this file importable: (file must return 'True' and convention is 1)
+1;

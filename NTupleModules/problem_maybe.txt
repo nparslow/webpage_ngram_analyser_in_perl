@@ -1,0 +1,11 @@
+
+
+Number of unique ngrams : 4175
+The 5 most common ngrams : 
+	1 : :STARTTOK:-:ENDTOK: (590)
+	2 : :STARTTOK:-Cutty (41)
+	3 : Cutty-Sark (32)
+	4 : :STARTTOK:-cutty (31)
+	5 : :STARTTOK:-The (25)
+The number of hapax : 3592
+Barchart for the frequency distribution of the 40 most common ngrams saved to blah.png
